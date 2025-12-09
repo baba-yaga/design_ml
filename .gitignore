@@ -1,0 +1,40 @@
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# Logs
+*.log
+
+# Local configuration
+.env
+.env.local
