@@ -84,7 +84,6 @@ class PointProcessOptimizer:
             ax.set_title(title, fontsize=14)
             ax.set_yticks([])
             plt.tight_layout()
-            plt.show()
             return fig
             
         elif self.d == 2:
@@ -98,7 +97,6 @@ class PointProcessOptimizer:
             ax.set_aspect('equal')
             ax.grid(True, alpha=0.3)
             plt.tight_layout()
-            plt.show()
             return fig
             
         elif self.d == 3:
@@ -250,5 +248,4 @@ class PointProcessDiagnostics:
             axes[2].grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.show()
         return fig
