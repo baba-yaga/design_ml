@@ -47,16 +47,18 @@ class PointProcessOptimizer:
         if not self.periodic:
             return pdist(X)
         
-        # Minimum image convention for periodic boundaries
-        n = X.shape[0]
-        distances = []
-        for i in range(n):
-            for j in range(i + 1, n):
-                delta = X[i] - X[j]
-                # Wrap differences to [-L/2, L/2] for each dimension
-                delta = delta - self.box_size * np.round(delta / self.box_size)
-                distances.append(np.linalg.norm(delta))
-        return np.array(distances)
+        # Vectorized minimum image convention
+        # Diff matrix: shape (n, n, d)
+        diffs = X[:, np.newaxis, :] - X[np.newaxis, :, :]
+        
+        # Wrap differences to [-L/2, L/2] bounds (minimum image)
+        diffs -= self.box_size * np.round(diffs / self.box_size)
+        
+        # Euclidean norms
+        dists_matrix = np.linalg.norm(diffs, axis=-1)
+        
+        # Return condensed distance matrix to match pdist output (upper triangle)
+        return squareform(dists_matrix, checks=False)
     
     def _wrap_to_box(self, X):
         """Wrap points back into the box [minima, maxima] using modular arithmetic."""
