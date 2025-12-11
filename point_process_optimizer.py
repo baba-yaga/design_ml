@@ -62,31 +62,68 @@ class PointProcessOptimizer:
         """Wrap points back into the box [minima, maxima] using modular arithmetic."""
         return self.minima + np.mod(X - self.minima, self.box_size)
     
+    def _compute_potential_from_config(self, X):
+        """Compute potential from a configuration array X of shape (n, d)."""
+        distances = self._compute_pairwise_distances(X)
+        potentials = self.kernel(distances)
+        return np.sum(potentials)
+
     def compute_potential(self, X_flat):
         """Compute the total potential H(X)."""
         X = X_flat.reshape(self.n, self.d)
         if self.periodic:
             X = self._wrap_to_box(X)  # Ensure points are in canonical box
-        distances = self._compute_pairwise_distances(X)
-        potentials = self.kernel(distances)
-        return np.sum(potentials)
+        return self._compute_potential_from_config(X)
     
-    def optimize(self, X_initial=None, method='L-BFGS-B', maxiter=1000):
-        """Find configuration that minimizes potential."""
+    def optimize(self, X_initial=None, method='L-BFGS-B', maxiter=1000, pin_first_point=None):
+        """Find configuration that minimizes potential.
+        
+        Parameters:
+        -----------
+        X_initial : array-like, optional - Initial configuration (default: random)
+        method : str - Optimization method (default: 'L-BFGS-B' for bounded, 'BFGS' for periodic)
+        maxiter : int - Maximum iterations (default: 1000)
+        pin_first_point : bool, optional - If True, fix first point to break translational
+            symmetry. Default is True for periodic, False otherwise.
+        """
         if X_initial is None:
             X_initial = self.generate_random_points()
         
+        # Default: pin first point only for periodic (to break translational symmetry)
+        if pin_first_point is None:
+            pin_first_point = self.periodic
+        
         if self.periodic:
-            # No bounds needed - topology handles wrapping
-            # Use a method that doesn't require bounds
-            result = minimize(
-                self.compute_potential,
-                X_initial.flatten(),
-                method='BFGS',
-                options={'maxiter': maxiter, 'disp': False}
-            )
-            # Wrap final result back into canonical box
-            self.X_optimal = self._wrap_to_box(result.x.reshape(self.n, self.d))
+            if pin_first_point:
+                # Pin first point to break translational symmetry
+                # This dramatically improves convergence by eliminating the valley of
+                # equivalent solutions that differ only by a global translation
+                pinned_point = X_initial[0:1].copy()  # Shape (1, d)
+                X_free_initial = X_initial[1:]  # Shape (n-1, d)
+                
+                def objective_pinned(X_flat):
+                    X_free = X_flat.reshape(self.n - 1, self.d)
+                    X_full = np.vstack([pinned_point, self._wrap_to_box(X_free)])
+                    return self._compute_potential_from_config(X_full)
+                
+                result = minimize(
+                    objective_pinned,
+                    X_free_initial.flatten(),
+                    method='BFGS',
+                    options={'maxiter': maxiter, 'disp': False}
+                )
+                # Reconstruct full configuration
+                X_free_opt = result.x.reshape(self.n - 1, self.d)
+                self.X_optimal = np.vstack([pinned_point, self._wrap_to_box(X_free_opt)])
+            else:
+                # No pinning - may converge slowly due to translation invariance
+                result = minimize(
+                    self.compute_potential,
+                    X_initial.flatten(),
+                    method='BFGS',
+                    options={'maxiter': maxiter, 'disp': False}
+                )
+                self.X_optimal = self._wrap_to_box(result.x.reshape(self.n, self.d))
         else:
             # Set bounds for non-periodic case
             bounds = [(self.minima[i % self.d], self.maxima[i % self.d]) 
