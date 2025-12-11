@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 class PointProcessOptimizer:
     """Optimizer for point configurations using kernel-based pair potentials."""
     
-    def __init__(self, d, n, minima=None, maxima=None, kernel=None):
+    def __init__(self, d, n, minima=None, maxima=None, kernel=None, periodic=False):
         """
         Initialize the optimizer.
         
@@ -26,12 +26,15 @@ class PointProcessOptimizer:
         minima : array-like - Minimum values for each dimension (default: 0)
         maxima : array-like - Maximum values for each dimension (default: 1)
         kernel : callable - Kernel function K(r) (default: 1/r repulsive)
+        periodic : bool - If True, use periodic boundary conditions (torus topology)
         """
         self.d = d
         self.n = n
         self.minima = np.zeros(d) if minima is None else np.array(minima)
         self.maxima = np.ones(d) if maxima is None else np.array(maxima)
+        self.box_size = self.maxima - self.minima  # Size of box in each dimension
         self.kernel = kernel if kernel else lambda r: 1.0 / (r + 1e-10)
+        self.periodic = periodic
         self.X_optimal = None
     
     def generate_random_points(self):
@@ -39,10 +42,32 @@ class PointProcessOptimizer:
         X = np.random.uniform(size=(self.n, self.d))
         return X * (self.maxima - self.minima) + self.minima
     
+    def _compute_pairwise_distances(self, X):
+        """Compute pairwise distances, with minimum image convention if periodic."""
+        if not self.periodic:
+            return pdist(X)
+        
+        # Minimum image convention for periodic boundaries
+        n = X.shape[0]
+        distances = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                delta = X[i] - X[j]
+                # Wrap differences to [-L/2, L/2] for each dimension
+                delta = delta - self.box_size * np.round(delta / self.box_size)
+                distances.append(np.linalg.norm(delta))
+        return np.array(distances)
+    
+    def _wrap_to_box(self, X):
+        """Wrap points back into the box [minima, maxima] using modular arithmetic."""
+        return self.minima + np.mod(X - self.minima, self.box_size)
+    
     def compute_potential(self, X_flat):
         """Compute the total potential H(X)."""
         X = X_flat.reshape(self.n, self.d)
-        distances = pdist(X)  # Pairwise Euclidean distances
+        if self.periodic:
+            X = self._wrap_to_box(X)  # Ensure points are in canonical box
+        distances = self._compute_pairwise_distances(X)
         potentials = self.kernel(distances)
         return np.sum(potentials)
     
@@ -51,19 +76,30 @@ class PointProcessOptimizer:
         if X_initial is None:
             X_initial = self.generate_random_points()
         
-        # Set bounds
-        bounds = [(self.minima[i % self.d], self.maxima[i % self.d]) 
-                  for i in range(self.n * self.d)]
+        if self.periodic:
+            # No bounds needed - topology handles wrapping
+            # Use a method that doesn't require bounds
+            result = minimize(
+                self.compute_potential,
+                X_initial.flatten(),
+                method='BFGS',
+                options={'maxiter': maxiter, 'disp': False}
+            )
+            # Wrap final result back into canonical box
+            self.X_optimal = self._wrap_to_box(result.x.reshape(self.n, self.d))
+        else:
+            # Set bounds for non-periodic case
+            bounds = [(self.minima[i % self.d], self.maxima[i % self.d]) 
+                      for i in range(self.n * self.d)]
+            result = minimize(
+                self.compute_potential,
+                X_initial.flatten(),
+                method=method,
+                bounds=bounds,
+                options={'maxiter': maxiter, 'disp': False}
+            )
+            self.X_optimal = result.x.reshape(self.n, self.d)
         
-        result = minimize(
-            self.compute_potential,
-            X_initial.flatten(),
-            method=method,
-            bounds=bounds,
-            options={'maxiter': maxiter, 'disp': False}
-        )
-        
-        self.X_optimal = result.x.reshape(self.n, self.d)
         self.optimization_result = result
         return self.X_optimal
     
@@ -156,13 +192,38 @@ class PointProcessOptimizer:
 class PointProcessDiagnostics:
     """Diagnostic functions for point configurations."""
     
-    def __init__(self, X, minima=None, maxima=None):
+    def __init__(self, X, minima=None, maxima=None, periodic=False):
         self.X = np.array(X)
         self.n, self.d = self.X.shape
         self.minima = np.zeros(self.d) if minima is None else np.array(minima)
         self.maxima = np.ones(self.d) if maxima is None else np.array(maxima)
-        self.volume = np.prod(self.maxima - self.minima)
+        self.box_size = self.maxima - self.minima
+        self.periodic = periodic
+        self.volume = np.prod(self.box_size)
         self.intensity = self.n / self.volume
+    
+    def _pairwise_distance_matrix(self, X1, X2=None):
+        """Compute pairwise distances with minimum image convention if periodic."""
+        if X2 is None:
+            X2 = X1
+            same = True
+        else:
+            same = False
+        
+        if not self.periodic:
+            if same:
+                return squareform(pdist(X1))
+            else:
+                return cdist(X1, X2)
+        
+        # Minimum image convention
+        n1, n2 = len(X1), len(X2)
+        distances = np.zeros((n1, n2))
+        for i in range(n1):
+            delta = X2 - X1[i]
+            delta = delta - self.box_size * np.round(delta / self.box_size)
+            distances[i] = np.linalg.norm(delta, axis=1)
+        return distances
     
     def ripley_k_function(self, r_values=None, n_r=50):
         """Compute Ripley's K-function."""
@@ -170,7 +231,7 @@ class PointProcessDiagnostics:
             max_r = np.min(self.maxima - self.minima) / 2
             r_values = np.linspace(0, max_r, n_r)
         
-        distances = squareform(pdist(self.X))
+        distances = self._pairwise_distance_matrix(self.X)
         K_values = np.zeros(len(r_values))
         
         for i, r in enumerate(r_values):
@@ -190,7 +251,7 @@ class PointProcessDiagnostics:
         samples = samples * (self.maxima - self.minima) + self.minima
         
         # Min distance from each sample to configuration points
-        min_distances = cdist(samples, self.X).min(axis=1)
+        min_distances = self._pairwise_distance_matrix(samples, self.X).min(axis=1)
         
         F_values = np.array([np.mean(min_distances <= r) for r in r_values])
         return r_values, F_values
@@ -203,7 +264,7 @@ class PointProcessDiagnostics:
             r_values = np.linspace(0, max_r, n_r)
     
         # Compute pairwise distances
-        distances = squareform(pdist(self.X))
+        distances = self._pairwise_distance_matrix(self.X)
         # Set diagonal to infinity to exclude self-distances
         np.fill_diagonal(distances, np.inf)
         # Get nearest neighbour distance for each point
