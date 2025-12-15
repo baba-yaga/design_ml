@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 class PointProcessOptimizer:
     """Optimizer for point configurations using kernel-based pair potentials."""
     
-    def __init__(self, d, n, minima=None, maxima=None, kernel=None, periodic=False):
+    def __init__(self, d, n, minima=None, maxima=None, kernel=None, periodic=True):
         """
         Initialize the optimizer.
         
@@ -225,6 +225,227 @@ class PointProcessOptimizer:
             return fig
         else:
             print(f"Cannot plot {self.d}-dimensional configuration directly.")
+            return None
+
+    def random_shift(self, X, magnitude=None):
+        """
+        Apply a random shift to the configuration X.
+        
+        Parameters:
+        -----------
+        X : array-like - Point configuration
+        magnitude : float, optional - Scaling factor for shift (default: n^(-1/d))
+        """
+        if magnitude is None:
+            magnitude = self.n ** (-1.0 / self.d)
+            
+        # v_i uniformly distributed in [0.5*magnitude*(minima-maxima), 0.5*magnitude*(maxima-minima)]
+        # This creates a random shift vector v within a box scaled by magnitude
+        ranges = self.maxima - self.minima
+        low = 0.5 * magnitude * (self.minima - self.maxima)
+        high = 0.5 * magnitude * (self.maxima - self.minima)
+        
+        shift_vector = np.random.uniform(low, high, size=(1, self.d))
+        X_shifted = X + shift_vector
+        
+        if self.periodic:
+            return self._wrap_to_box(X_shifted)
+        else:
+            return np.clip(X_shifted, self.minima, self.maxima)
+
+    def random_rotation(self, X, center=None, continuous_rotation=False):
+        """
+        Apply a random rotation/reflection to the configuration X.
+        
+        If periodic=True and continuous_rotation=False, samples from the hyperoctahedral 
+        group B_d (signed permutations) to preserve toroidal distances.
+        
+        If periodic=False or continuous_rotation=True, samples uniformly from O(d).
+        Note: Continuous rotation on a torus breaks the distance metric visually if projected
+        to a single box, but is useful for visualizing configuration symmetries/randomness.
+        
+        Parameters:
+        -----------
+        X : array-like - Point configuration
+        center : array-like, optional - Center of rotation (default: center of box)
+        continuous_rotation : bool, optional - If True, force continuous rotation even if periodic.
+        """
+        if center is None:
+            center = (self.minima + self.maxima) / 2.0
+            
+        if self.periodic and not continuous_rotation:
+            # For periodic boundaries (torus), continuous rotations break the distance metric.
+            # We must sample from the symmetry group of the lattice (Hyperoctahedral group B_d).
+            # This consists of signed permutation matrices.
+            
+            # 1. Random permutation of axes
+            perm = np.random.permutation(self.d)
+            
+            # 2. Random signs (reflections)
+            signs = np.random.choice([-1, 1], size=self.d)
+            
+            # Apply transformation: x'_i = s_i * (x_{p_i} - c_{p_i}) + c_i
+            # Actually, simpler to view as: center coordinate system, permute/reflect, wrap.
+            
+            X_centered = X - center
+            X_new = np.zeros_like(X)
+            
+            for i in range(self.d):
+                X_new[:, i] = signs[i] * X_centered[:, perm[i]]
+                
+            X_rotated = X_new + center
+            
+            return self._wrap_to_box(X_rotated)
+            
+        else:
+            # Non-periodic OR forced continuous: continuous rotation in O(d)
+            if self.d == 1:
+                # O(1) is {-1, 1}. Randomly choose to reflect or not.
+                if np.random.rand() < 0.5:
+                    # Reflection around center
+                    X_rotated = 2*center - X
+                else:
+                    return X.copy()
+                
+                # Handle boundaries
+                if self.periodic:
+                    return self._wrap_to_box(X_rotated)
+                else:
+                    return np.clip(X_rotated, self.minima, self.maxima)
+            
+            # Generate random rotation matrix using QR decomposition of Gaussian matrix
+            H = np.random.randn(self.d, self.d)
+            Q, R = np.linalg.qr(H)
+            
+            X_centered = X - center
+            X_rotated = X_centered @ Q.T + center
+            
+            if self.periodic:
+                return self._wrap_to_box(X_rotated)
+            else:
+                return np.clip(X_rotated, self.minima, self.maxima)
+
+    def plot_random_transformations(self, X=None, k=3, title='Random Shift + Rotations'):
+        """
+        Plot original configuration and k random shift+rotations.
+        
+        Parameters:
+        -----------
+        X : array-like, optional - Base configuration (default: optimal)
+        k : int - Number of random transformations to generate
+        title : str - Plot title
+        """
+        if X is None:
+            X = self.X_optimal
+        if X is None:
+            raise ValueError("No configuration provided.")
+            
+        # Generate k transformed configurations
+        transformed_configs = []
+        for _ in range(k):
+            # Apply both rotation and shift
+            X_new = self.random_rotation(X)
+            X_new = self.random_shift(X_new)
+            transformed_configs.append(X_new)
+            
+        if self.d == 1:
+            fig, ax = plt.subplots(figsize=(12, 4))
+            # Original
+            ax.scatter(X[:, 0], np.zeros(self.n), s=100, c='black', label='Original', zorder=10)
+            
+            # Transformed
+            for i, Xt in enumerate(transformed_configs):
+                # Random color not too dark, not too light
+                color = np.random.uniform(0.3, 0.9, 3)
+                ax.scatter(Xt[:, 0], np.ones(self.n) * (i + 1), s=50, color=color, label=f'Trans {i+1}')
+                
+            ax.set_xlim(self.minima[0] - 0.1, self.maxima[0] + 0.1)
+            ax.set_yticks(range(k + 1))
+            ax.set_yticklabels(['Orig'] + [f'T{i+1}' for i in range(k)])
+            ax.set_xlabel('x')
+            ax.set_title(title)
+            ax.legend(loc='upper right')
+            plt.tight_layout()
+            return fig
+            
+        elif self.d == 2:
+            fig, ax = plt.subplots(figsize=(8, 8))
+            
+            # Transformed
+            for i, Xt in enumerate(transformed_configs):
+                color = np.random.uniform(0.3, 0.9, 3)
+                ax.scatter(Xt[:, 0], Xt[:, 1], s=50, color=color, alpha=0.6, label=f'Trans {i+1}')
+                
+            # Original on top
+            ax.scatter(X[:, 0], X[:, 1], s=100, c='black', edgecolors='white', label='Original', zorder=10)
+            
+            ax.set_xlim(self.minima[0] - 0.1, self.maxima[0] + 0.1)
+            ax.set_ylim(self.minima[1] - 0.1, self.maxima[1] + 0.1)
+            ax.set_xlabel('x₁')
+            ax.set_ylabel('x₂')
+            ax.set_title(title)
+            ax.set_aspect('equal')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            plt.tight_layout()
+            return fig
+            
+        elif self.d == 3:
+            # Setup similar to plot_configuration
+            x0, y0, z0 = self.minima
+            x1, y1, z1 = self.maxima
+            edges_x = [x0, x1, None, x0, x1, None, x0, x1, None, x0, x1, None,
+                       x0, x0, None, x1, x1, None, x0, x0, None, x1, x1, None,
+                       x0, x0, None, x1, x1, None, x0, x0, None, x1, x1, None]
+            edges_y = [y0, y0, None, y1, y1, None, y0, y0, None, y1, y1, None,
+                       y0, y1, None, y0, y1, None, y0, y1, None, y0, y1, None,
+                       y0, y0, None, y0, y0, None, y1, y1, None, y1, y1, None]
+            edges_z = [z0, z0, None, z0, z0, None, z1, z1, None, z1, z1, None,
+                       z0, z0, None, z0, z0, None, z1, z1, None, z1, z1, None,
+                       z0, z1, None, z0, z1, None, z0, z1, None, z0, z1, None]
+            
+            data = [
+                go.Scatter3d(
+                    x=edges_x, y=edges_y, z=edges_z,
+                    mode='lines',
+                    line=dict(color='grey', width=2),
+                    name='Boundary S',
+                    showlegend=False
+                )
+            ]
+            
+            # Transformed points
+            for i, Xt in enumerate(transformed_configs):
+                # Random color
+                color_rgb = np.random.uniform(50, 230, 3).astype(int)
+                color_hex = f'rgb({color_rgb[0]},{color_rgb[1]},{color_rgb[2]})'
+                
+                data.append(go.Scatter3d(
+                    x=Xt[:, 0], y=Xt[:, 1], z=Xt[:, 2],
+                    mode='markers',
+                    marker=dict(size=6, color=color_hex, opacity=0.6),
+                    name=f'Trans {i+1}'
+                ))
+            
+            # Original points
+            data.append(go.Scatter3d(
+                x=X[:, 0], y=X[:, 1], z=X[:, 2],
+                mode='markers',
+                marker=dict(size=8, color='black', line=dict(color='white', width=1)),
+                name='Original'
+            ))
+            
+            fig = go.Figure(data=data)
+            fig.update_layout(
+                title=f'{title} (drag to rotate)',
+                scene=dict(xaxis_title='x₁', yaxis_title='x₂', zaxis_title='x₃'),
+                width=700, height=600
+            )
+            fig.show()
+            return fig
+            
+        else:
+            print(f"Cannot plot {self.d}-dimensional configuration.")
             return None
 
 
