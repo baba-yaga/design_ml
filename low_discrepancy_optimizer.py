@@ -58,7 +58,8 @@ class ProductPotentialOptimizer:
     where p_alpha(x, y) = Prod_{k=0}^{d-1} |x[k] - y[k]|^{-alpha}
     """
     
-    def __init__(self, d, n, minima=None, maxima=None, alpha=2.0, repulsive_boundary=False):
+    def __init__(self, d, n, minima=None, maxima=None, alpha=2.0, repulsive_boundary=False, 
+                 discount_mode=None, discount_beta=1.0):
         """
         Initialize optimizer.
         
@@ -70,6 +71,8 @@ class ProductPotentialOptimizer:
         maxima : array-like - Box upper bounds
         alpha : float - Exponent for potential (default 2.0)
         repulsive_boundary : bool - If True, add boundary repulsion term
+        discount_mode : str or None - 'exp', 'power', or 'log' for distance discounting
+        discount_beta : float - parameter for 'power' mode
         """
         self.d = d
         self.n = n
@@ -77,8 +80,60 @@ class ProductPotentialOptimizer:
         self.maxima = np.ones(d) if maxima is None else np.array(maxima)
         self.alpha = alpha
         self.repulsive_boundary = repulsive_boundary
+        self.discount_mode = discount_mode
+        self.discount_beta = discount_beta
         self.X_optimal = None
         self.optimization_result = None
+
+    def _compute_discount_matrix(self, diffs_abs):
+        """
+        Compute discount factor matrix based on L1 norm distances.
+        diffs_abs: (n, n, d) absolute coordinate differences
+        """
+        if self.discount_mode is None:
+            return 1.0
+            
+        # L1 norm adjusted to box dimensions
+        # z[k] = |x[k]-y[k]| / (max[k]-min[k])
+        box_size = self.maxima - self.minima
+        # Avoid div by zero
+        box_size = np.where(box_size < 1e-12, 1.0, box_size)
+        
+        # Shape: (n, n, d)
+        z_k = diffs_abs / box_size[np.newaxis, np.newaxis, :]
+        
+        # L1 norm ||z||
+        z_norm = np.sum(z_k, axis=2)
+        
+        # Define calibration point z_cal = d / 10
+        # We want Factor(z_cal) approx 0.5
+        z_cal = self.d / 10.0
+        
+        if self.discount_mode == 'exp':
+            # Factor = exp(-C * ||z||)
+            # 0.5 = exp(-C * z_cal) => ln(0.5) = -C * z_cal => C = ln(2) / z_cal
+            C = np.log(2) / z_cal
+            return np.exp(-C * z_norm)
+        
+        elif self.discount_mode == 'power':
+            # Factor = C * ||z||^{-beta}
+            # 0.5 = C * z_cal^{-beta} => C = 0.5 * z_cal^{beta}
+            C = 0.5 * (z_cal ** self.discount_beta)
+            # Add epsilon to z_norm to avoid div by zero
+            return C * ((z_norm + 1e-10) ** (-self.discount_beta))
+            
+        elif self.discount_mode == 'log':
+            # Factor = C / log(e + ||z|| * K)
+            # Let's assume K=1 for simplicity in scaling, or K such that sensitivity matches
+            # Let's use K = 10/d so that at d/10, argument is 1?
+            # User said "const 1/log ||z||", robustified to C / log(e + ||z||)
+            
+            # Let's fix K=1.
+            # 0.5 = C / log(e + z_cal) => C = 0.5 * log(e + z_cal)
+            C = 0.5 * np.log(np.e + z_cal)
+            return C / np.log(np.e + z_norm)
+            
+        return 1.0
 
     def compute_energy(self, X_flat):
         """Compute total energy H(X)."""
@@ -107,13 +162,17 @@ class ProductPotentialOptimizer:
         # Ensure we don't include self-interaction (diagonal is 0)
         np.fill_diagonal(prod_diffs, np.inf) 
         
-        # Pairwise potentials
-        potentials_matrix = prod_diffs ** (-self.alpha)
+        # Base Pairwise potentials
+        base_potentials = prod_diffs ** (-self.alpha)
+        
+        # Calculate Discount Factor
+        if self.discount_mode:
+            discount_factors = self._compute_discount_matrix(abs_diffs)
+            potentials_matrix = base_potentials * discount_factors
+        else:
+            potentials_matrix = base_potentials
         
         # Sum over off-diagonal elements
-        # Since matrix is symmetric, sum and divide by 2? 
-        # The formula usually is Sum_{i != j}, which counts each pair twice (i,j) and (j,i)
-        # unless specified as Sum_{i < j}. Assuming Sum_{i \neq j} per user prompt.
         energy_pair = np.sum(potentials_matrix[np.isfinite(potentials_matrix)])
         
         energy_boundary = 0.0
