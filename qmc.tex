@@ -1,0 +1,19 @@
+\documentclass[12pt]{article}
+
+\begin{document}
+\emph{Low-discrepancy sequences} (often called \emph{quasi-Monte Carlo (QMC) sequences}) are deterministic sequences of points in $[0,1]^d$ designed to approximate the uniform distribution as evenly as possible. Their defining property is a small \emph{discrepancy}, which measures the maximal deviation between the empirical distribution of the first $N$ points and the Lebesgue measure, typically tested on axis-aligned boxes. 
+
+Standard (star) discrepancy of $X_N=\{x_1,..., x_N\} \subset S=\prod_{k=1}^d [m_k,M_k]$  is defined as 
+
+\begin{displaymath}
+D^*_N = \sup_{B\in\mathcal{B}_{\mathrm{axis}}} \left| \frac{\#(X_N\cap B)}{N}-\lambda_d(B)\right|,
+\end{displaymath}
+where $\mathcal{B}_{\mathrm{axis}}$ is the class of axis-aligned boxes $\prod_{k=1}^d [m_k, t_k],\ t_k \in [m_k,M_k]$
+
+For this star discrepancy $D_N^*$ , low-discrepancy sequences achieve rates of order $O(\log^d N / N))$, which is asymptotically much better than the $O(N^{-1/2})$ behaviour of independent Monte Carlo sampling. This improvement underlies their effectiveness for numerical integration of functions of bounded variation, formalised by the Koksma–Hlawka inequality, which bounds the integration error by the product of the discrepancy of the point set and the variation of the integrand.
+
+Mathematically, most widely used low-discrepancy sequences are \emph{digital sequences} constructed in a fixed base (usually base 2) via arithmetic over finite fields. Examples include Halton sequences (based on radical inverse functions in prime bases), Sobol’ sequences (using carefully chosen direction numbers and digital nets), and Faure or Niederreiter–Xing sequences. Their construction ensures that, for every $N$, the initial prefix of the sequence fills dyadic (or, more generally, digital) partitions of the unit cube in a highly balanced way. A key practical feature is \emph{extensibility}: the sequence can be generated incrementally, and every prefix remains a good low-discrepancy point set, without having to recompute earlier points.
+
+Low-discrepancy sequences are particularly useful for high-accuracy numerical integration and sampling when the integrand is reasonably smooth and depends on many variables. In such settings, quasi-Monte Carlo methods often outperform standard Monte Carlo by orders of magnitude, especially in moderate dimensions, while remaining simple to implement and fully deterministic. Their limitations are equally important: the discrepancy notion is inherently anisotropic (based on axis-aligned boxes), they are not adaptive to local features of a specific integrand, and they are not rotationally invariant. Consequently, in practice they are often combined with randomisation (scrambling, random shifts) or with adaptive or problem-specific refinements, yielding hybrid methods that retain the global uniformity of low-discrepancy sampling while better exploiting the local structure of the integrand.
+
+\end{document}
