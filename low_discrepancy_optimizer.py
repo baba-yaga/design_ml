@@ -59,7 +59,7 @@ class ProductPotentialOptimizer:
     """
     
     def __init__(self, d, n, minima=None, maxima=None, alpha=2.0, repulsive_boundary=False, 
-                 discount_mode=None, discount_beta=1.0):
+                 discount_mode=None, discount_beta=1.0, discount_C=None):
         """
         Initialize optimizer.
         
@@ -73,6 +73,7 @@ class ProductPotentialOptimizer:
         repulsive_boundary : bool - If True, add boundary repulsion term
         discount_mode : str or None - 'exp', 'power', or 'log' for distance discounting
         discount_beta : float - parameter for 'power' mode
+        discount_C : float or None - Custom decay/scale parameter. If None, computed from calibration.
         """
         self.d = d
         self.n = n
@@ -82,8 +83,33 @@ class ProductPotentialOptimizer:
         self.repulsive_boundary = repulsive_boundary
         self.discount_mode = discount_mode
         self.discount_beta = discount_beta
+        self.discount_C = discount_C
         self.X_optimal = None
         self.optimization_result = None
+        
+        # Auto-calibrate C if needed
+        self._calibrate_C()
+
+    def _calibrate_C(self):
+        """Calibrate discount_C if not provided."""
+        if self.discount_C is not None:
+            return
+
+        if self.discount_mode is None:
+            return
+
+        # Define calibration point z_cal = d / 10
+        z_cal = self.d / 10.0
+        
+        if self.discount_mode == 'exp':
+             # 0.5 = exp(-C * z_cal) => C = ln(2) / z_cal
+             self.discount_C = np.log(2) / z_cal
+        elif self.discount_mode == 'power':
+             # 0.5 = C * z_cal^{-beta} => C = 0.5 * z_cal^{beta}
+             self.discount_C = 0.5 * (z_cal ** self.discount_beta)
+        elif self.discount_mode == 'log':
+             # 0.5 = C / log(e + z_cal) => C = 0.5 * log(e + z_cal)
+             self.discount_C = 0.5 * np.log(np.e + z_cal)
 
     def _compute_discount_matrix(self, diffs_abs):
         """
@@ -105,33 +131,18 @@ class ProductPotentialOptimizer:
         # L1 norm ||z||
         z_norm = np.sum(z_k, axis=2)
         
-        # Define calibration point z_cal = d / 10
-        # We want Factor(z_cal) approx 0.5
-        z_cal = self.d / 10.0
-        
         if self.discount_mode == 'exp':
             # Factor = exp(-C * ||z||)
-            # 0.5 = exp(-C * z_cal) => ln(0.5) = -C * z_cal => C = ln(2) / z_cal
-            C = np.log(2) / z_cal
-            return np.exp(-C * z_norm)
+            return np.exp(-self.discount_C * z_norm)
         
         elif self.discount_mode == 'power':
             # Factor = C * ||z||^{-beta}
-            # 0.5 = C * z_cal^{-beta} => C = 0.5 * z_cal^{beta}
-            C = 0.5 * (z_cal ** self.discount_beta)
             # Add epsilon to z_norm to avoid div by zero
-            return C * ((z_norm + 1e-10) ** (-self.discount_beta))
+            return self.discount_C * ((z_norm + 1e-10) ** (-self.discount_beta))
             
         elif self.discount_mode == 'log':
-            # Factor = C / log(e + ||z|| * K)
-            # Let's assume K=1 for simplicity in scaling, or K such that sensitivity matches
-            # Let's use K = 10/d so that at d/10, argument is 1?
-            # User said "const 1/log ||z||", robustified to C / log(e + ||z||)
-            
-            # Let's fix K=1.
-            # 0.5 = C / log(e + z_cal) => C = 0.5 * log(e + z_cal)
-            C = 0.5 * np.log(np.e + z_cal)
-            return C / np.log(np.e + z_norm)
+            # Factor = C / log(e + ||z||)
+            return self.discount_C / np.log(np.e + z_norm)
             
         return 1.0
 
