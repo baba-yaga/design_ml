@@ -49,6 +49,212 @@ class LowDiscrepancyGenerator:
         sample = np.random.uniform(size=(n, self.d))
         return self._scale(sample)
 
+    def _compute_envelope_bounds(self):
+        """
+        Compute expanded envelope bounds to ensure coverage after any rotation.
+        
+        For a d-dimensional box, the envelope is a hypercube centered at the box center
+        with side length equal to the diagonal of the original box.
+        This ensures that any rotation around the center keeps the original box covered.
+        """
+        center = (self.minima + self.maxima) / 2
+        box_size = self.maxima - self.minima
+        
+        # Diagonal of the box = sqrt(sum of squared side lengths)
+        diagonal = np.sqrt(np.sum(box_size ** 2))
+        
+        # Envelope is a hypercube with side = diagonal, centered at box center
+        envelope_min = center - diagonal / 2
+        envelope_max = center + diagonal / 2
+        
+        return envelope_min, envelope_max
+    
+    def _random_rotation_matrix(self, angle=None):
+        """
+        Generate a random rotation matrix for 2D.
+        
+        For d > 2, this generates a rotation in a random 2D plane.
+        
+        Parameters:
+        -----------
+        angle : float or None
+            Rotation angle in radians. If None, a random angle in [0, 2π) is used.
+        
+        Returns:
+        --------
+        R : ndarray of shape (d, d)
+            Rotation matrix
+        """
+        if angle is None:
+            angle = np.random.uniform(0, 2 * np.pi)
+        
+        if self.d == 2:
+            c, s = np.cos(angle), np.sin(angle)
+            return np.array([[c, -s], [s, c]])
+        elif self.d == 3:
+            # Random rotation in 3D using axis-angle representation
+            # Generate random axis
+            axis = np.random.randn(3)
+            axis = axis / np.linalg.norm(axis)
+            
+            # Rodrigues' rotation formula
+            K = np.array([
+                [0, -axis[2], axis[1]],
+                [axis[2], 0, -axis[0]],
+                [-axis[1], axis[0], 0]
+            ])
+            R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+            return R
+        else:
+            # For d > 3, use a random Givens rotation in a random plane
+            R = np.eye(self.d)
+            i, j = np.random.choice(self.d, 2, replace=False)
+            c, s = np.cos(angle), np.sin(angle)
+            R[i, i] = c
+            R[j, j] = c
+            R[i, j] = -s
+            R[j, i] = s
+            return R
+    
+    def _apply_transform(self, points, rotation_matrix, shift_vector, center):
+        """
+        Apply rotation around center and then shift.
+        
+        Parameters:
+        -----------
+        points : ndarray of shape (n, d)
+        rotation_matrix : ndarray of shape (d, d)
+        shift_vector : ndarray of shape (d,)
+        center : ndarray of shape (d,) - rotation center
+        
+        Returns:
+        --------
+        transformed : ndarray of shape (n, d)
+        """
+        # Translate to origin (center becomes 0)
+        centered = points - center
+        
+        # Rotate around origin
+        rotated = centered @ rotation_matrix.T
+        
+        # Translate back and apply shift
+        transformed = rotated + center + shift_vector
+        
+        return transformed
+    
+    def generate_with_transform(self, n, method='sobol', angle=None, shift=None, 
+                                  scramble=True, oversample_factor=2.0, return_info=False):
+        """
+        Generate points with random rotation and shift.
+        
+        Points are generated in an expanded envelope region using the specified method,
+        transformed (rotated and shifted), and then clipped to the original window.
+        
+        Parameters:
+        -----------
+        n : int
+            Target number of points (actual count may vary after clipping)
+        method : str
+            Generation method: 'sobol', 'halton', 'latin_hypercube', or 'random'
+        angle : float or None
+            Rotation angle in radians. If None, random angle is used.
+        shift : array-like or None
+            Shift vector. If None, random shift within safe bounds is used.
+        scramble : bool
+            Whether to use scrambled sequence (for sobol, halton, latin_hypercube)
+        oversample_factor : float
+            Factor to oversample points (since some will be clipped).
+            Larger values give more consistent final point counts.
+        return_info : bool
+            If True, return dict with transformation info
+            
+        Returns:
+        --------
+        points : ndarray of shape (m, d)
+            Transformed and clipped points (m ≈ n but may vary)
+        info : dict (only if return_info=True)
+            Contains 'angle', 'shift', 'rotation_matrix', 'n_generated', 'n_kept', 'method'
+        """
+        # Compute envelope bounds
+        envelope_min, envelope_max = self._compute_envelope_bounds()
+        center = (self.minima + self.maxima) / 2
+        box_size = self.maxima - self.minima
+        
+        # Compute how many points to generate (oversample to ensure enough after clip)
+        envelope_size = envelope_max - envelope_min
+        volume_ratio = np.prod(envelope_size) / np.prod(box_size)
+        n_generate = int(n * volume_ratio * oversample_factor)
+        n_generate = max(n_generate, n)
+        
+        # Generate points in envelope using specified method
+        if method == 'sobol':
+            sampler = qmc.Sobol(d=self.d, scramble=scramble)
+            sample_unit = sampler.random(n_generate)
+        elif method == 'halton':
+            sampler = qmc.Halton(d=self.d, scramble=scramble)
+            sample_unit = sampler.random(n_generate)
+        elif method == 'latin_hypercube':
+            sampler = qmc.LatinHypercube(d=self.d, scramble=scramble)
+            sample_unit = sampler.random(n_generate)
+        elif method == 'random':
+            sample_unit = np.random.uniform(size=(n_generate, self.d))
+        else:
+            raise ValueError(f"Unknown method: {method}. Use 'sobol', 'halton', 'latin_hypercube', or 'random'.")
+        
+        # Scale to envelope
+        sample = qmc.scale(sample_unit, envelope_min, envelope_max)
+        
+        # Generate rotation matrix
+        R = self._random_rotation_matrix(angle)
+        actual_angle = angle if angle is not None else np.arctan2(R[1, 0], R[0, 0]) if self.d >= 2 else 0
+        
+        # Generate shift vector if not provided
+        if shift is None:
+            # Random shift, bounded so that center doesn't move too far
+            max_shift = box_size * 0.1  # 10% of box size
+            shift = np.random.uniform(-max_shift, max_shift)
+        else:
+            shift = np.asarray(shift)
+        
+        # Apply transformation
+        transformed = self._apply_transform(sample, R, shift, center)
+        
+        # Clip to original window
+        mask = np.all((transformed >= self.minima) & (transformed <= self.maxima), axis=1)
+        clipped = transformed[mask]
+        
+        if return_info:
+            info = {
+                'method': method,
+                'angle': actual_angle,
+                'shift': shift,
+                'rotation_matrix': R,
+                'n_generated': n_generate,
+                'n_kept': len(clipped),
+                'envelope_min': envelope_min,
+                'envelope_max': envelope_max
+            }
+            return clipped, info
+        
+        return clipped
+    
+    # Convenience aliases for backward compatibility
+    def sobol_with_transform(self, n, **kwargs):
+        """Generate Sobol' sequence with random rotation and shift. See generate_with_transform."""
+        return self.generate_with_transform(n, method='sobol', **kwargs)
+    
+    def halton_with_transform(self, n, **kwargs):
+        """Generate Halton sequence with random rotation and shift. See generate_with_transform."""
+        return self.generate_with_transform(n, method='halton', **kwargs)
+    
+    def latin_hypercube_with_transform(self, n, **kwargs):
+        """Generate Latin Hypercube sample with random rotation and shift. See generate_with_transform."""
+        return self.generate_with_transform(n, method='latin_hypercube', **kwargs)
+    
+    def random_with_transform(self, n, **kwargs):
+        """Generate random points with random rotation and shift. See generate_with_transform."""
+        return self.generate_with_transform(n, method='random', **kwargs)
+
 
 class ProductPotentialOptimizer:
     """
