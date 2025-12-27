@@ -71,6 +71,26 @@ diagnostics = PointProcessDiagnostics(X_opt, minima=[0, 0], maxima=[1, 1])
 diagnostics.plot_all_diagnostics()
 ```
 
+### Low-Discrepancy Sequences with Random Transform
+
+Generate quasi-Monte Carlo sequences (Sobol', Halton, Latin Hypercube) with random rotation and shift:
+
+```python
+from low_discrepancy_optimizer import LowDiscrepancyGenerator
+
+gen = LowDiscrepancyGenerator(d=2, minima=[0, 0], maxima=[1, 1])
+
+# Generate Sobol' points with random rotation and shift
+points = gen.sobol_with_transform(n=100)
+
+# Or use the generic method with any QMC sequence
+points = gen.generate_with_transform(n=100, method='halton')
+
+# Get transformation details
+points, info = gen.sobol_with_transform(n=100, return_info=True)
+print(f"Angle: {np.degrees(info['angle'])}°, Kept: {info['n_kept']} points")
+```
+
 ## API Reference
 
 ### `PointProcessOptimizer`
@@ -109,6 +129,38 @@ PointProcessDiagnostics(X, minima=None, maxima=None)
 - `nearest_neighbour_distribution(r_values=None, n_r=50)`: Compute nearest-neighbour distribution G(r)
 - `plot_all_diagnostics()`: Plot all diagnostic functions
 
+### `LowDiscrepancyGenerator`
+
+#### Constructor
+```python
+LowDiscrepancyGenerator(d, minima=None, maxima=None)
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `d` | int | Dimension |
+| `minima` | array-like | Box lower bounds (default: 0) |
+| `maxima` | array-like | Box upper bounds (default: 1) |
+
+#### Methods
+
+- `sobol(n, scramble=True)`: Generate Sobol' sequence
+- `halton(n, scramble=True)`: Generate Halton sequence
+- `latin_hypercube(n, scramble=True)`: Generate Latin Hypercube sample
+- `random(n)`: Generate random uniform points
+- `generate_with_transform(n, method='sobol', angle=None, shift=None, ...)`: Generate QMC points with random rotation and shift
+
+#### `generate_with_transform` Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `n` | int | required | Target number of points |
+| `method` | str | 'sobol' | 'sobol', 'halton', 'latin_hypercube', or 'random' |
+| `angle` | float/None | None | Rotation angle in radians (None = random) |
+| `shift` | array/None | None | Shift vector (None = random) |
+| `oversample_factor` | float | 2.0 | Oversampling factor |
+| `return_info` | bool | False | Return transformation info dict |
+
 ## Mathematical Background
 
 The optimizer minimizes the energy potential:
@@ -128,7 +180,9 @@ where $K(r)$ is a kernel function defining pair interactions. The default kernel
 ```
 point-process-optimization/
 ├── point_process_optimizer.py    # Main module with optimizer and diagnostics classes
+├── low_discrepancy_optimizer.py  # Low-discrepancy sequences and product potential optimizer
 ├── point_process_optimization.ipynb  # Interactive Jupyter notebook examples
+├── qmc_transform_demo.ipynb      # QMC sequences with random rotation/shift demo
 ├── requirements.txt              # Python dependencies
 └── README.md                     # This file
 ```
